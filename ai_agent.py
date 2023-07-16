@@ -1,75 +1,83 @@
-import time
-from flask import Flask, request
-from twilio.rest import Client
-from googleapiclient.discovery import build
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from email.mime.text import MIMEText
-import base64
-import datetime
+import openai
+import json
 
-# Your Gmail API credentials
-GMAIL_API_CREDENTIALS = 'path_to_your_assistant_gmail_api_credentials.json'
 
-# Your Twilio credentials
-TWILIO_ACCOUNT_SID = 'your_twilio_account_sid'
-TWILIO_AUTH_TOKEN = 'your_twilio_auth_token'
+class AIAgent:
+    def __init__(self):
+        self.messages = [{"role": "system",
+                          "content": "You are a helpful assistant."}]
 
-# Create a Gmail API service
-SCOPES = ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/calendar']
-creds = None
-if os.path.exists('token.json'):
-    creds = Credentials.from_authorized_user_file('token.json', SCOPES)
-if not creds or not creds.valid:
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-    else:
-        flow = InstalledAppFlow.from_client_secrets_file(GMAIL_API_CREDENTIALS, SCOPES)
-        creds = flow.run_local_server(port=0)
-    with open('token.json', 'w') as token:
-        token.write(creds.to_json())
-service = build('gmail', 'v1', credentials=creds)
+    def add_user_message(self, content):
+        self.messages.append({"role": "user", "content": content})
 
-# Create a Twilio client
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    def get_bot_response(self):
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=self.messages,
+            functions=[
+                {
+                    "name": "schedule_calendar_time",
+                    "description": "Schedule a time on the calendar",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "time": {
+                                "type": "string",
+                                "description": "The time to schedule on the calendar"
+                            }
+                        },
+                        "required": ["time"]
+                    }
+                },
+                {
+                    "name": "send_email",
+                    "description": "Send an email",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "to": {
+                                "type": "string",
+                                "description": "The email address to send to"
+                            },
+                            "body": {
+                                "type": "string",
+                                "description": "The body of the email"
+                            }
+                        },
+                        "required": ["to", "body"]
+                    }
+                }
+            ]
+        )
+        response_message = response['choices'][0]['message']
+        self.messages.append(response_message)
 
-app = Flask(__name__)
+        # Check if the model called a function
+        if 'function_call' in response_message:
+            function_call = response_message['function_call']
 
-@app.route("/sms", methods=['POST'])
-def sms_reply():
-    """Respond to incoming calls with a simple text message."""
-    resp = MessagingResponse()
+            # Get the arguments for the function
+            arguments = json.loads(function_call['arguments'])
 
-    # Extract the message body from the request
-    incoming_msg = request.values.get('Body', '').lower()
+            # Call the function with the arguments
+            if function_call['name'] == 'schedule_calendar_time':
+                self.schedule_calendar_time(arguments['time'])
+            elif function_call['name'] == 'send_email':
+                self.send_email(arguments['to'], arguments['body'])
 
-    # If the incoming message is 'sick', cancel all events for the day and notify
-    if 'sick' in incoming_msg:
-        # Get today's date
-        now = datetime.datetime.utcnow().isoformat() + 'Z'  # 'Z' indicates UTC time
+        return response_message['content']
 
-        # Get the events for today
-        events_result = service.events().list(calendarId='primary', timeMin=now, singleEvents=True, orderBy='startTime').execute()
-        events = events_result.get('items', [])
+    def clear_messages(self):
+        self.messages = [{"role": "system",
+                          "content": "You are a helpful assistant."}]
 
-        # Cancel all events for today
-        for event in events:
-            service.events().delete(calendarId='primary', eventId=event['id']).execute()
+    def schedule_calendar_time(self, time):
+        # This is where you would add the code to schedule a time on the
+        # calendar
+        from calendar_integration import add_event
+        add_event()
 
-        # Send an email to notify about the cancellation
-        message = MIMEText('I am not feeling well today and will not be able to attend the scheduled events. I will reschedule them as soon as possible.')
-        message['to'] = 'recipient@example.com'
-        message['from'] = 'your-assistant-email@example.com'
-        message['subject'] = 'Cancellation of today's events'
-        raw_message = base64.urlsafe_b64encode(message.as_bytes())
-        raw_message = raw_message.decode()
-        message = service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
-
-        resp.message("All events for today have been cancelled.")
-    else:
-        resp.message("I didn't understand your message.")
-
-    return str(resp)
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    def send_email(self, to, body):
+        # This is where you would add the code to send an email
+        from email_integration import main as send_email
+        send_email()
